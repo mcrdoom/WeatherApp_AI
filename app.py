@@ -261,17 +261,26 @@ if st.button("Получить рекомендации по одежде"):
                 recommendations = predict_clothing_for_app(temp, humidity, wind, precipitation, clouds, time_of_day, city_for_prediction)
                 
                 st.subheader("Ваши рекомендации по одежде:")
-                st.success(recommendations)
-                st.markdown(f"---") # Это разделительная линия
-                st.write("Хотите обновить гардероб?") # Это текст перед ссылкой
-                st.markdown(f"**[Посмотрите актуальные предложения на Sela]({SELA_AFFILIATE_LINK})**", unsafe_allow_html=True) # Это сама кликабельная ссылка
-                st.markdown(f"---") # Это еще одна разделительная линия
-                st.markdown("---")
-                st.info(f"Текущие параметры для **{selected_city}**: **{temp}°C**, **{humidity}%** влажность, **{wind} м/с** ветер, **{precipitation}** осадки, **{clouds}** облачность, **{time_of_day}**.")
-            else:
-                st.error("Не удалось получить погодные данные. Попробуйте еще раз или выберите другой город.")
-    else:
-        st.warning("Пожалуйста, выберите или введите город.")
+
+    # НОВЫЙ БЛОК ДЛЯ ВЫВОДА ОДЕЖДЫ В ОТДЕЛЬНЫХ КОРОБОЧКАХ
+    # Это сделает вывод более структурированным и красивым
+    for item in recommendations:
+        # st.expander создает раскрывающийся блок. Сюда мы потом добавим детальное описание.
+        with st.expander(f"**{item.capitalize()}**"): # Заголовок коробочки
+            st.write(f"_Детальное описание для {item.capitalize()} будет добавлено позже._")
+            # Здесь мы можем добавить ссылку на покупку конкретного предмета, если найдем такие партнерки.
+            st.markdown(f"**[Поиск {item.capitalize()} на Sela]({SELA_AFFILIATE_LINK})**", unsafe_allow_html=True)
+
+            # Разделитель и общая ссылка на Sela остаются
+    st.markdown(f"---")
+    st.write("Ищете что-то еще или хотите больше вариантов?")
+    st.markdown(f"**[Посетите весь каталог Sela]({SELA_AFFILIATE_LINK})**", unsafe_allow_html=True)
+    st.markdown(f"---")
+    st.info(f"Текущие параметры для **{selected_city}**: **{temp}°C**, **{humidity}%** влажность, **{wind} м/с** ветер, **{precipitation}** осадки, **{clouds}** облачность, **{time_of_day}**.")
+else:
+    st.error("Не удалось получить погодные данные. Попробуйте еще раз или выберите другой город.")
+
+st.warning("Пожалуйста, выберите или введите город.")
 
 # Дополнительная информация для пользователя
 st.markdown("---")
