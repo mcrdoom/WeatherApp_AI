@@ -16,7 +16,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # --- API КЛЮЧ OpenWeatherMap ---
 # ВСТАВЬ СВОЙ API КЛЮЧ ЗДЕСЬ:
 OPENWEATHER_API_KEY = "c80a654b9866303179325d953f8d0c79" 
-OPENWEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather"
+# Твой API ключ OpenWeatherMap, уже должен быть тут
+OPENWEATHER_API_KEY = "c80a654b9866303179325d953f8d0c79"
+
+        # Вставь сюда скопированную партнерскую ссылку Sela
+SELA_AFFILIATE_LINK = "https://kpwfp.com/g/2d356747430c2ebe1cc726a738318c/?erid=5jtCeReLm1S3Xx3LfVkzjYr"  # <-- ВОТ СЮДА!
+
 
 # --- Загрузка необходимых файлов ---
 # Эти объекты загружаются ОДИН РАЗ при запуске Streamlit приложения,
@@ -257,7 +262,10 @@ if st.button("Получить рекомендации по одежде"):
                 
                 st.subheader("Ваши рекомендации по одежде:")
                 st.success(recommendations)
-                
+                st.markdown(f"---") # Это разделительная линия
+                st.write("Хотите обновить гардероб?") # Это текст перед ссылкой
+                st.markdown(f"**[Посмотрите актуальные предложения на Sela]({SELA_AFFILIATE_LINK})**", unsafe_allow_html=True) # Это сама кликабельная ссылка
+                st.markdown(f"---") # Это еще одна разделительная линия
                 st.markdown("---")
                 st.info(f"Текущие параметры для **{selected_city}**: **{temp}°C**, **{humidity}%** влажность, **{wind} м/с** ветер, **{precipitation}** осадки, **{clouds}** облачность, **{time_of_day}**.")
             else:
