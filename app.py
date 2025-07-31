@@ -21,7 +21,7 @@ OPENWEATHER_API_KEY = "c80a654b9866303179325d953f8d0c79"
 
         # Вставь сюда скопированную партнерскую ссылку Sela
 SELA_AFFILIATE_LINK = "https://kpwfp.com/g/2d356747430c2ebe1cc726a738318c/?erid=5jtCeReLm1S3Xx3LfVkzjYr"  # <-- ВОТ СЮДА!
-
+OPENWEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather"
 
 # --- Загрузка необходимых файлов ---
 # Эти объекты загружаются ОДИН РАЗ при запуске Streamlit приложения,
