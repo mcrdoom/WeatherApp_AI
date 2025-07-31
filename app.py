@@ -28,14 +28,23 @@ def load_all_resources():
     try:
         model = load_model(MODEL_PATH)
         with open(OHE_PATH, 'rb') as f:
-            ohe = pickle.load(f)
+            # ohe_categories должен содержать обученный OneHotEncoder
+            # и список order_of_features_for_model
+            ohe_data = pickle.load(f)
+            ohe = ohe_data['ohe_encoder']
+            # Также нам нужен порядок признаков, на котором обучалась модель
+            # Предполагаем, что он был сохранен в 'ohe_categories.pkl'
+            # или мы можем его собрать динамически
+            input_features_order = ohe_data.get('input_features_order', None)
+            
         with open(SCALER_PATH, 'rb') as f:
             scaler = pickle.load(f)
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
-            clothing_mapping = pickle.load(f)
+            clothing_mapping = pickle.load(f) # Это, скорее всего, Series или Dict {encoded_id: clothing_item_name}
         with open(CLOTHING_GROUPS_PATH, 'rb') as f:
-            clothing_groups = pickle.load(f) # Загружаем clothing_groups
-        return model, ohe, scaler, clothing_mapping, clothing_groups
+            clothing_groups = pickle.load(f) # Это может быть DataFrame или другой список групп
+
+        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
         st.stop()
@@ -43,7 +52,7 @@ def load_all_resources():
         st.error(f"Непредвиденная ошибка при загрузке ресурсов: {e}")
         st.stop()
 
-model, ohe, scaler, clothing_mapping, clothing_groups = load_all_resources()
+model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order = load_all_resources()
 st.success("Все модели и маппинги успешно загружены!")
 
 # --- Функции для предсказания и маппинга ---
@@ -52,68 +61,85 @@ st.success("Все модели и маппинги успешно загруж�
 def map_precipitation(description):
     desc = description.lower()
     if 'дождь' in desc or 'ливень' in desc or 'морось' in desc:
-        return 1
+        return 'дождь' # Возвращаем строку для OHE
     elif 'снег' in desc:
-        return 2
+        return 'снег' # Возвращаем строку для OHE
     elif 'туман' in desc or 'дымка' in desc:
-        return 3
-    elif 'гроза' in desc: # Добавил грозу
-        return 4
-    return 0 # Нет осадков / Ясно
+        return 'туман' # Возвращаем строку для OHE
+    elif 'гроза' in desc: 
+        return 'гроза' # Возвращаем строку для OHE
+    return 'ясно' # Возвращаем строку для OHE
 
 # Ваша функция map_cloudiness
 def map_cloudiness(percentage):
     if percentage <= 10:
-        return 0  # Ясно
+        return 'ясно'  # Возвращаем строку для OHE
     elif percentage <= 40:
-        return 1  # Небольшая облачность
+        return 'небольшая облачность'  # Возвращаем строку для OHE
     elif percentage <= 70:
-        return 2  # Переменная облачность
+        return 'переменная облачность'  # Возвращаем строку для OHE
     else:
-        return 3  # Пасмурно
+        return 'пасмурно'  # Возвращаем строку для OHE
 
 # Ваша функция map_time_of_day
 def map_time_of_day(hour):
     if 5 <= hour < 12:
-        return 0  # Утро
+        return 'утро'  # Возвращаем строку для OHE
     elif 12 <= hour < 18:
-        return 1  # День
+        return 'день'  # Возвращаем строку для OHE
     elif 18 <= hour < 23:
-        return 2  # Вечер
+        return 'вечер'  # Возвращаем строку для OHE
     else:
-        return 3  # Ночь
+        return 'ночь'  # Возвращаем строку для OHE
 
 # Вспомогательная функция для вывода времени суток текстом (для st.info)
-def map_time_of_day_to_text(encoded_value):
-    if encoded_value == 0: return "Утро"
-    elif encoded_value == 1: return "День"
-    elif encoded_value == 2: return "Вечер"
-    elif encoded_value == 3: return "Ночь"
-    return "Неизвестно"
+def map_time_of_day_to_text(encoded_string): # Теперь принимает строку, а не число
+    return encoded_string.capitalize() # Просто капитализируем для вывода
 
 
-def predict_clothing_for_app(temp, humidity, wind, precipitation_encoded, cloudiness_encoded, time_of_day_encoded):
+def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
     # СОЗДАЕМ DATAFRAME С ТЕМИ ЖЕ РУССКИМИ НАЗВАНИЯМИ КОЛОНОК, КАК И ПРИ ОБУЧЕНИИ
-    input_data = pd.DataFrame([[temp, humidity, wind, precipitation_encoded, cloudiness_encoded, time_of_day_encoded]],
+    # И категориальными значениями в текстовом виде, как ожидает OHE
+    input_df = pd.DataFrame([[temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat]],
                               columns=['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)',
-                                       'precipitation_encoded', 'cloudiness_encoded', 'time_of_day_encoded'])
+                                       'Осадки', 'Облачность', 'Время суток'])
 
-    # Числовые признаки, которые нужно масштабировать (с русскими названиями)
+    # Числовые признаки
     numerical_features = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
     
+    # Категориальные признаки (теперь в текстовом виде)
+    categorical_features = ['Осадки', 'Облачность', 'Время суток']
+
     # Масштабирование численных признаков
-    # scaler.transform теперь получит DataFrame с ожидаемыми именами
-    input_data_scaled = scaler.transform(input_data[numerical_features])
+    input_data_scaled = scaler.transform(input_df[numerical_features])
     input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_features)
 
-    # Объединение всех признаков для предсказания
-    # Категориальные признаки (уже закодированные числами)
-    categorical_encoded_features_df = input_data[['precipitation_encoded', 'cloudiness_encoded', 'time_of_day_encoded']]
+    # One-Hot Encoding для категориальных признаков
+    # ohe_encoder ожидает DataFrame
+    input_ohe = ohe.transform(input_df[categorical_features])
     
-    # Собираем финальный DataFrame для модели.
-    # Важно: порядок колонок должен соответствовать порядку, на котором модель обучалась.
-    # Предполагаем, что порядок был: численные, потом категориальные.
-    final_input_df = pd.concat([input_data_scaled_df, categorical_encoded_features_df], axis=1)
+    # Получаем названия колонок после OHE
+    ohe_feature_names = ohe.get_feature_names_out(categorical_features)
+    input_ohe_df = pd.DataFrame(input_ohe.toarray(), columns=ohe_feature_names)
+
+    # Объединение всех признаков
+    # Важно: колонки должны быть в том же порядке, в каком они были при обучении модели.
+    # Если input_features_order был сохранен, используем его.
+    # Если нет, предполагаем, что numerical_features идут первыми, затем ohe_feature_names.
+    
+    # Собираем финальный DataFrame для модели
+    final_input_df = pd.concat([input_data_scaled_df, input_ohe_df], axis=1)
+
+    # Если input_features_order был успешно загружен, используем его для переупорядочивания колонок
+    if input_features_order is not None and len(input_features_order) == final_input_df.shape[1]:
+        final_input_df = final_input_df[input_features_order]
+    elif input_features_order is not None and len(input_features_order) != final_input_df.shape[1]:
+        st.warning("Количество признаков в input_features_order не совпадает с количеством признаков после обработки. Могут быть ошибки.")
+        # Fallback: попытаемся использовать тот порядок, который есть, но это рискованно.
+        # Лучше пересохранить ohe_categories.pkl с корректным input_features_order из process_data.py
+    elif input_features_order is None:
+        st.warning("Порядок признаков для модели не был загружен. Убедитесь, что 'input_features_order' сохранен в 'ohe_categories.pkl'. Порядок признаков может быть неправильным.")
+        # Для дебага, можно вывести final_input_df.columns
 
     # Преобразуем в numpy array для подачи в модель Keras
     input_for_prediction = final_input_df.values
@@ -121,53 +147,35 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_encoded, cloudi
     # Предсказание
     predictions = model.predict(input_for_prediction)
     
-    # Обработка предсказаний:
-    # Здесь мы предполагаем, что модель выдает 71 вероятность (одна для каждого clothing_item).
-    # И clothing_mapping используется для сопоставления индекса с именем одежды.
-    
-    # Убедимся, что predictions одномерный массив, если он пришел как [[...]]
+    # Обработка предсказаний для получения списка рекомендованной одежды
     if predictions.ndim > 1:
         predictions = predictions[0]
 
-    # Сортируем индексы по убыванию вероятности
-    sorted_indices = np.argsort(predictions)[::-1]
-    
     recommended_items = []
+    threshold = 0.2 # Порог активации, можно настроить (0.5 может быть слишком высоким для мульти-лейбл)
     
-    # Используем `clothing_mapping` (которое должно быть словарем или Series {индекс: название_одежды})
-    # Или `clothing_groups` (если это DataFrame с колонками 'clothing_item' и 'encoded_value')
+    # clothing_mapping должен быть Series/словарь {encoded_id: clothing_item_name}
+    # Мы предполагаем, что индексы predictions соответствуют encoded_id в clothing_mapping
     
-    # Если clothing_mapping - это Series или словарь, где ключ = индекс, значение = имя одежды
-    # ИЛИ если clothing_groups - это DataFrame, где индекс = id, колонка 'clothing_item' = название
+    # Получаем список всех возможных предметов одежды из clothing_mapping
+    all_clothing_items = clothing_mapping.tolist() # Assuming clothing_mapping is a Series of names
     
-    # Предполагаем, что clothing_groups - это DataFrame с колонкой 'clothing_item' и индексом,
-    # соответствующим ID предмета одежды, как это было в исходных данных.
-    
-    # Возьмем топ N рекомендаций, которые имеют высокую вероятность
-    # Это важно для получения нескольких предметов, как было раньше ("кепка, майка, шорты")
-    
-    # Порог активации для предсказания
-    threshold = 0.5 # Можно настроить. Если вероятность выше 0.5, то рекомендуем.
-    
-    # Собираем список рекомендованной одежды
-    # Здесь мы используем clothing_mapping, который должен быть словарем {encoded_id: clothing_item_name}
-    for idx in sorted_indices:
-        if predictions[idx] > threshold:
-            # Ищем название одежды по индексу.
-            # `clothing_mapping` должен быть словарем или Series, где ключ - это индекс (encoded value)
-            # а значение - это название одежды.
-            
-            # Если clothing_mapping - это Series с индексом 'encoded' и колонкой 'clothing_item'
-            if idx in clothing_mapping.index: # Проверяем, что индекс существует в clothing_mapping
-                recommended_items.append(clothing_mapping.loc[idx, 'clothing_item']) # Получаем имя
+    for i, prob in enumerate(predictions):
+        if prob > threshold:
+            # i - это индекс предсказания, который соответствует закодированному значению
+            # clothing_mapping должен преобразовать этот индекс обратно в название одежды
+            # Если clothing_mapping - это Series с индексом, а значения - названия одежды
+            if i < len(all_clothing_items): # Проверка на всякий случай
+                recommended_items.append(all_clothing_items[i])
+            else:
+                st.warning(f"Индекс {i} из предсказания вне диапазона clothing_mapping.")
         
-        # Ограничиваем количество рекомендаций, чтобы не было слишком много
-        if len(recommended_items) >= 6: # Например, до 6 предметов
+        # Ограничим количество рекомендаций (можно настроить)
+        if len(recommended_items) >= 7: 
             break
 
     # Если ничего не предсказано выше порога, возвращаем что-то дефолтное
     if not recommended_items:
-        # Можно использовать более умную дефолтную рекомендацию на основе температуры, как раньше
         if temp >= 25:
             return ["футболка", "шорты"]
         elif 15 <= temp < 25:
@@ -216,29 +224,28 @@ if st.button("Получить рекомендации по одежде"):
                 wind = weather_data['wind']['speed']
                 
                 # Описание осадков и облачности
-                # Убедимся, что 'weather' и 'description' существуют
                 precipitation_text = weather_data['weather'][0]['description'] if weather_data.get('weather') and weather_data['weather'] else 'ясно'
                 cloudiness_percent = weather_data['clouds']['all'] if 'clouds' in weather_data else 0
                 
                 # Время суток с учетом часового пояса города
-                timezone_offset_seconds = weather_data.get('timezone', 0) # По умолчанию 0, если нет
-                city_timezone = pytz.FixedOffset(timezone_offset_seconds / 60) # pytz принимает минуты
+                timezone_offset_seconds = weather_data.get('timezone', 0) 
+                city_timezone = pytz.FixedOffset(timezone_offset_seconds / 60) 
                 
                 utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
                 city_time = utc_now.astimezone(city_timezone)
                 current_hour = city_time.hour
 
-                # Преобразование текстовых/числовых значений в кодированные для модели
-                precipitation_encoded = map_precipitation(precipitation_text)
-                cloudiness_encoded = map_cloudiness(cloudiness_percent)
-                time_of_day_encoded = map_time_of_day(current_hour)
+                # Преобразование текстовых/числовых значений в текстовые для OHE
+                precipitation_cat = map_precipitation(precipitation_text)
+                cloudiness_cat = map_cloudiness(cloudiness_percent)
+                time_of_day_cat = map_time_of_day(current_hour)
                 
                 # 2. Получение рекомендаций от нейросети
                 recommended_clothing = predict_clothing_for_app(
                     temp, humidity, wind, 
-                    precipitation_encoded, 
-                    cloudiness_encoded, 
-                    time_of_day_encoded
+                    precipitation_cat, # Теперь передаем текстовые категории
+                    cloudiness_cat, 
+                    time_of_day_cat
                 )
 
                 st.subheader("Ваши рекомендации по одежде:")
@@ -256,15 +263,14 @@ if st.button("Получить рекомендации по одежде"):
                 st.markdown(f"---")
 
                 # Вывод текущих параметров
-                st.info(f"Текущие параметры для {selected_city}: {temp}°C, {humidity}% влажность, {wind} м/с ветер, {precipitation_text.capitalize()} осадки, {cloudiness_percent}% облачность, {map_time_of_day_to_text(time_of_day_encoded)}.")
+                st.info(f"Текущие параметры для {selected_city}: {temp}°C, {humidity}% влажность, {wind} м/с ветер, {precipitation_cat.capitalize()} осадки, {cloudiness_percent}% облачность, {map_time_of_day_to_text(time_of_day_cat)}.")
 
             except requests.exceptions.HTTPError as http_err:
                 st.error(f"Ошибка HTTP при получении погоды: {http_err}. Код статуса: {response.status_code}")
                 st.warning("Убедитесь, что название города введено корректно и API-ключ OpenWeatherMap действителен.")
             except requests.exceptions.ConnectionError as conn_err:
                 st.error(f"Ошибка соединения: {conn_err}. Проверьте ваше интернет-соединение.")
-            except requests.exceptions.Timeout as timeout_err:
-                st.error(f"Истекло время ожидания запроса: {timeout_err}. Попробуйте еще раз.")
+            except requests.exceptions.Timeout as timeout_err:st.error(f"Истекло время ожидания запроса: {timeout_err}. Попробуйте еще раз.")
             except requests.exceptions.RequestException as req_err:
                 st.error(f"Произошла ошибка при запросе к OpenWeatherMap API: {req_err}")
             except Exception as e:
