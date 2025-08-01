@@ -37,36 +37,44 @@ def load_all_resources():
             scaler = pickle.load(f) # Загружаем Scaler
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
             clothing_mapping = pickle.load(f) # Series/словарь {encoded_id: clothing_item_name}
+            # Если clothing_mapping это DataFrame, а не Series, убедимся, что он готов к использованию
+            if isinstance(clothing_mapping, pd.DataFrame):
+                # Предполагаем, что clothing_mapping DataFrame имеет колонку 'clothing_item'
+                # и индекс (или колонку 'encoded_value') для маппинга
+                # Создадим Series для удобного доступа по индексу
+                clothing_mapping_series = pd.Series(clothing_mapping['clothing_item'].values, index=clothing_mapping.index)
+                clothing_mapping = clothing_mapping_series
+            
         with open(CLOTHING_GROUPS_PATH, 'rb') as f:
             clothing_groups = pickle.load(f) # DataFrame или другой список групп
 
         # --- Собираем ожидаемый порядок признаков для модели ---
         # Это критически важно, так как модель ожидала 20 признаков в определенном порядке.
-        # Мы предполагаем, что scaler обучался на английских названиях колонок,
-        # а OHE на русских.
-        # Поэтому `input_features_order` должен содержать полный список тех имен,
-        # которые были в DataFrame, поданном в model.fit()
-
-        # Названия численных признаков, как они БЫЛИ в исходных данных обучения
-        # (предполагаем английские, так как scaler жалуется на русские)
+        # Мы предполагаем, что scaler обучался на английских названиях колонок (как в API),
+        # а OHE на русских названиях категорий (как в исходных данных).
+        
+        # Названия численных признаков, как они БЫЛИ в исходных данных обучения для SCALER (англ.)
         numerical_cols_order_for_scaler = ['temperature_c', 'humidity_percent', 'wind_speed_mps']
         
-        # Названия категориальных признаков, как они БЫЛИ в исходных данных обучения (русские)
+        # Названия категориальных признаков, как они БЫЛИ в исходных данных обучения для OHE (рус.)
         categorical_cols_for_ohe = ['Осадки', 'Облачность', 'Время суток']
         
         # Получаем названия OHE-колонок из обученного OHE
         ohe_feature_names = ohe.get_feature_names_out(categorical_cols_for_ohe)
         
         # Полный порядок признаков, который ожидается моделью
-        # Предполагаем, что сначала идут масштабированные численные, потом OHE-кодированные
+        # Должен быть: масштабированные численные, затем OHE-кодированные категориальные.
         input_features_order = numerical_cols_order_for_scaler + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
         if len(input_features_order) != 20:
-             st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
+             st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков на входе модели, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
              # Если тут ошибка, то проблема в том, как была обучена модель/OHE.
-             # Если у вас 20 признаков, но другие имена/порядок, то тут нужно точнее.
-             # Это самое вероятное место расхождения, т.к. модель ожидала 20.
+             # Это может быть самым сложным моментом.
+             # Если warnings продолжаются, возможно, нужно заглянуть в `process_data.py`
+             # и убедиться, что `ohe.get_feature_names_out()` был вызван с теми же именами
+             # и что `model.fit()` получил именно такой порядок колонок.
+             # Для дебага, можно добавить: st.write("Ожидаемый порядок:", input_features_order)
              
         return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order
     except FileNotFoundError as e:
@@ -159,16 +167,16 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness
     recommended_items = []
     threshold = 0.2 # Порог активации для мульти-лейбл классификации. Можно настроить.
     
-    # clothing_mapping должен быть Series/словарь {encoded_id: clothing_item_name}
+    # clothing_mapping должен быть Series {encoded_id: clothing_item_name}
     # Мы предполагаем, что индексы predictions соответствуют encoded_id в clothing_mapping
     
     # clothing_mapping содержит все 71 название одежды, проиндексированные 0..70
     # Просто перебираем предсказания и добавляем, если вероятность выше порога
     
-    # Предполагаем, что clothing_mapping это список/Series, где индекс == закодированное значение,
-    # а содержимое == название одежды.
     for i, prob in enumerate(predictions):
         if prob > threshold:
+            # i - это индекс предсказания, который соответствует закодированному значению
+            # clothing_mapping[i] должно давать название одежды
             if i < len(clothing_mapping): # Проверка на всякий случай
                 recommended_items.append(clothing_mapping[i])
             else:
