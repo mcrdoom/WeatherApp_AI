@@ -29,17 +29,15 @@ SELA_AFFILIATE_LINK = "https://kpwfp.com/g/2d356747430c2ebe1cc726a738318c/?erid=
 def load_all_resources():
     try:
         model = load_model(MODEL_PATH)
-        with open(OHE_PATH,'rb') as f:
+        with open(OHE_PATH, 'rb') as f:
             ohe = pickle.load(f) 
             
-        with open(SCALER_PATH, 'rb') as f:
+        with open(SCALER_PATH, 'rb')as f:
             scaler = pickle.load(f) 
             
-            # Динамически получаем имена признаков, на которых обучался scaler
-            # Это решит проблему 'input_features is not equal to feature_names_in_'
-            # Если scaler старой версии и не имеет feature_names_in_, это может сломаться
-            # Но для современных sklearn это должно быть
-            numerical_cols_for_scaler = scaler.feature_names_in_.tolist()
+            # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: ЖЕСТКО ЗАДАЕМ ИМЕНА ПРИЗНАКОВ ДЛЯ SCALER ---
+            # Предполагаем, что scaler был обучен на русских названиях колонок.
+            numerical_cols_for_scaler = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
 
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
             clothing_mapping = pickle.load(f) 
@@ -58,14 +56,13 @@ def load_all_resources():
         ohe_feature_names = ohe.get_feature_names_out(categorical_cols_for_ohe)
         
         # Полный порядок признаков, который ожидается моделью
-        # Должен быть: масштабированные численные, затем OHE-кодированные категориальные.
         input_features_order = numerical_cols_for_scaler + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
         if len(input_features_order) != 20:
              st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков на входе модели, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
              
-        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler # Передаем названия для scaler
+        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
         st.stop()
@@ -119,7 +116,7 @@ def map_time_of_day_to_text(encoded_string):
 
 
 def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
-    # Создаем DataFrame для передачи в scaler с ДИНАМИЧЕСКИ ПОЛУЧЕННЫМИ ИМЕНАМИ КОЛОНОК
+    # Создаем DataFrame для передачи в scaler с ЖЕСТКО ЗАДАННЫМИ РУССКИМИ ИМЕНАМИ КОЛОНОК
     numerical_input_for_scaler_df = pd.DataFrame([[temp, humidity, wind]],
                               columns=numerical_cols_for_scaler) # <<< ИСПОЛЬЗУЕМ numerical_cols_for_scaler
 
@@ -155,7 +152,6 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness
     recommended_items = []
     threshold = 0.2 # Порог активации для мульти-лейбл классификации. Можно настроить.
     
-    # clothing_mapping должен быть Series {encoded_id: clothing_item_name}
     for i, prob in enumerate(predictions):
         if prob > threshold:
             if i < len(clothing_mapping): 
