@@ -15,8 +15,8 @@ from sklearn.preprocessing import OneHotEncoder # Явно импортируе�
 MODEL_PATH = 'weather_clothing_model.h5'
 OHE_PATH = 'ohe_categories.pkl' 
 SCALER_PATH = 'scaler.pkl'
-CLOTHING_MAPPING_PATH = 'clothing_mapping.pkl'
-CLOTHING_GROUPS_PATH = 'clothing_groups.pkl' 
+CLOTHING_MAPPING_PATH = 'clothing_mapping.pkl' # В process_data.py это список категорий
+CLOTHING_GROUPS_PATH = 'clothing_groups.pkl' # Не используется напрямую в app.py, но загрузим для полноты
 
 # ТВОЙ API КЛЮЧ OPENWEATHERMAP! ОБЯЗАТЕЛЬНО ЗАМЕНИ ПЛЕЙСХОЛДЕР!
 OPENWEATHER_API_KEY = "c80a654b9866303179325d953f8d0c79"
@@ -35,31 +35,31 @@ def load_all_resources():
         with open(SCALER_PATH, 'rb') as f:
             scaler = pickle.load(f) 
             
-            # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: НАДЕЖНО ОПРЕДЕЛЯЕМ ИМЕНА ПРИЗНАКОВ ДЛЯ SCALER ---
-            # Попытаемся получить имена из scaler.feature_names_in_ (для новых sklearn)
-            # Если не получится, используем жестко заданные русские имена,
-            # которые, скорее всего, были использованы при обучении.
+            # --- Имена признаков для scaler (получаем из scaler.feature_names_in_) ---
+            # Это должно соответствовать именам, на которых scaler был обучен в process_data.py
+            # Если feature_names_in_ вдруг нет (старая версия sklearn), то используем дефолтные русские.
             try:
-                # Если scaler был обучен на DataFrame, feature_names_in_ будет содержать имена
                 numerical_cols_for_scaler = scaler.feature_names_in_.tolist()
             except AttributeError:
-                # Если scaler был обучен на numpy array (без имен) или версия sklearn старая
-                st.warning("scaler.feature_names_in_ не найдено. Предполагаем русские названия колонок для масштабирования.")
+                st.warning("scaler.feature_names_in_ не найдено. Предполагаем русские названия колонок для масштабирования (Температура, Влажность, Ветер).")
                 numerical_cols_for_scaler = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
             
-            # Дополнительная проверка на количество признаков
+            # Проверка на количество признаков
             if len(numerical_cols_for_scaler) != 3:
                  st.warning(f"Ожидалось 3 численных признака для scaler, но найдено {len(numerical_cols_for_scaler)}. Проверьте process_data.py.")
 
 
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
+            # clothing_mapping в process_data.py - это список, который используется для Y.shape[1]
+            # и для Y[i, clothing_mapping.index(item)] = 1
+            # То есть, это просто список строк, где индекс = закодированное значение.
             clothing_mapping = pickle.load(f) 
-            if isinstance(clothing_mapping, pd.DataFrame):
-                clothing_mapping_series = pd.Series(clothing_mapping['clothing_item'].values, index=clothing_mapping.index)
-                clothing_mapping = clothing_mapping_series
+            if not isinstance(clothing_mapping, list): # Убедимся, что это список
+                st.error("clothing_mapping.pkl должен содержать список названий одежды.")
+                st.stop()
             
         with open(CLOTHING_GROUPS_PATH, 'rb') as f:
-            clothing_groups = pickle.load(f) 
+            clothing_groups = pickle.load(f) # Просто загружаем, но не используем активно в app.py
 
         # --- Собираем ожидаемый порядок признаков для модели ---
         # Названия категориальных признаков, как они БЫЛИ в исходных данных обучения для OHE (рус.)
@@ -72,10 +72,12 @@ def load_all_resources():
         input_features_order = numerical_cols_for_scaler + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
+        # Если это предупреждение продолжает появляться, то проблема в том, как формируются
+        # признаки в process_data.py, или их количество отличается от 20.
         if len(input_features_order) != 20:
              st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков на входе модели, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
              
-        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler 
+        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
         st.stop()
@@ -91,9 +93,10 @@ st.success("Все модели и маппинги успешно загруж�
 # Ваша функция map_precipitation
 def map_precipitation(description):
     desc = description.lower()
-    if 'дождь' in desc or 'ливень' in desc or 'морось' in desc or 'небольшой дождь' in desc or 'умеренный дождь' in desc:
+    # Добавлены более полные варианты для лучшего маппинга
+    if 'дождь' in desc or 'ливень' in desc or 'морось' in desc or 'небольшой дождь' in desc or 'умеренный дождь' in desc or 'сильный дождь' in desc:
         return 'дождь' 
-    elif 'снег' in desc or 'легкий снег' in desc:
+    elif 'снег' in desc or 'легкий снег' in desc or 'снегопад' in desc:
         return 'снег' 
     elif 'туман' in desc or 'дымка' in desc:
         return 'туман' 
@@ -131,10 +134,11 @@ def map_time_of_day_to_text(encoded_string):
 def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
     # Создаем DataFrame для передачи в scaler с именами колонок, которые scaler ожидает
     numerical_input_for_scaler_df = pd.DataFrame([[temp, humidity, wind]],
-                              columns=numerical_cols_for_scaler) # <<< ИСПОЛЬЗУЕМ numerical_cols_for_scaler
+                              columns=numerical_cols_for_scaler) # <<< ИСПОЛЬЗУЕМ numerical_cols_for_scaler ИЗ ЗАГРУЖЕННЫХ ЗНАЧЕНИЙ
 
     # Масштабирование численных признаков
     input_data_scaled = scaler.transform(numerical_input_for_scaler_df)
+    # Создаем DataFrame ПОСЛЕ масштабирования, сохраняя правильные имена
     input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_cols_for_scaler)
 
     # Создаем DataFrame для передачи в OHE (с русскими названиями)
@@ -165,14 +169,15 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness
     recommended_items = []
     threshold = 0.2 # Порог активации для мульти-лейбл классификации. Можно настроить.
     
+    # clothing_mapping - это список, где индекс соответствует элементу одежды.
     for i, prob in enumerate(predictions):
         if prob > threshold:
-            if i < len(clothing_mapping): 
+            if i < len(clothing_mapping): # Проверка на всякий случай
                 recommended_items.append(clothing_mapping[i])
             else:
                 st.warning(f"Индекс {i} из предсказания вне диапазона clothing_mapping.")
         
-        if len(recommended_items) >= 7: 
+        if len(recommended_items) >= 7: # Ограничим количество рекомендаций
             break
 
     # Если ничего не предсказано выше порога, возвращаем что-то дефолтное
@@ -211,7 +216,8 @@ if st.button("Получить рекомендации по одежде"):
             try:
                 # 1. Получение погодных данных с OpenWeatherMap
                 params = {
-                    'q': selected_city,'appid': OPENWEATHER_API_KEY,
+                    'q': selected_city,
+                    'appid': OPENWEATHER_API_KEY,
                     'units': 'metric',
                     'lang': 'ru'
                 }
