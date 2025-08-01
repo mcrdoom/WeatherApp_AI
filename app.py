@@ -35,9 +35,22 @@ def load_all_resources():
         with open(SCALER_PATH, 'rb') as f:
             scaler = pickle.load(f) 
             
-            # --- Имена признаков для scaler (предполагаем русские, как было в обучении) ---
-            # Эти имена будут использованы для DataFrame ПОСЛЕ масштабирования
-            numerical_cols_for_scaler_output = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
+            # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: НАДЕЖНО ОПРЕДЕЛЯЕМ ИМЕНА ПРИЗНАКОВ ДЛЯ SCALER ---
+            # Попытаемся получить имена из scaler.feature_names_in_ (для новых sklearn)
+            # Если не получится, используем жестко заданные русские имена,
+            # которые, скорее всего, были использованы при обучении.
+            try:
+                # Если scaler был обучен на DataFrame, feature_names_in_ будет содержать имена
+                numerical_cols_for_scaler = scaler.feature_names_in_.tolist()
+            except AttributeError:
+                # Если scaler был обучен на numpy array (без имен) или версия sklearn старая
+                st.warning("scaler.feature_names_in_ не найдено. Предполагаем русские названия колонок для масштабирования.")
+                numerical_cols_for_scaler = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
+            
+            # Дополнительная проверка на количество признаков
+            if len(numerical_cols_for_scaler) != 3:
+                 st.warning(f"Ожидалось 3 численных признака для scaler, но найдено {len(numerical_cols_for_scaler)}. Проверьте process_data.py.")
+
 
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
             clothing_mapping = pickle.load(f) 
@@ -56,14 +69,13 @@ def load_all_resources():
         ohe_feature_names = ohe.get_feature_names_out(categorical_cols_for_ohe)
         
         # Полный порядок признаков, который ожидается моделью
-        # Должен быть: масштабированные численные (с русскими именами), затем OHE-кодированные категориальные.
-        input_features_order = numerical_cols_for_scaler_output + list(ohe_feature_names)
+        input_features_order = numerical_cols_for_scaler + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
         if len(input_features_order) != 20:
              st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков на входе модели, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
              
-        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler_output 
+        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler 
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
         st.stop()
@@ -71,7 +83,7 @@ def load_all_resources():
         st.error(f"Непредвиденная ошибка при загрузке ресурсов: {e}")
         st.stop()
 
-model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler_output = load_all_resources()
+model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler = load_all_resources()
 st.success("Все модели и маппинги успешно загружены!")
 
 # --- Функции для предсказания и маппинга ---
@@ -117,14 +129,13 @@ def map_time_of_day_to_text(encoded_string):
 
 
 def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
-    # --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ПЕРЕДАЕМ В SCALER КАК NUMPY МАССИВ ---
-    # Создаем numpy массив из числовых данных. Scaler будет работать с ним без проблем имен.
-    numerical_input_for_scaler_np = np.array([[temp, humidity, wind]])
-    
+    # Создаем DataFrame для передачи в scaler с именами колонок, которые scaler ожидает
+    numerical_input_for_scaler_df = pd.DataFrame([[temp, humidity, wind]],
+                              columns=numerical_cols_for_scaler) # <<< ИСПОЛЬЗУЕМ numerical_cols_for_scaler
+
     # Масштабирование численных признаков
-    input_data_scaled = scaler.transform(numerical_input_for_scaler_np)
-    # Создаем DataFrame ПОСЛЕ масштабирования, присваивая правильные имена
-    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_cols_for_scaler_output)
+    input_data_scaled = scaler.transform(numerical_input_for_scaler_df)
+    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_cols_for_scaler)
 
     # Создаем DataFrame для передачи в OHE (с русскими названиями)
     categorical_input_for_ohe = pd.DataFrame([[precipitation_cat, cloudiness_cat, time_of_day_cat]],
@@ -200,8 +211,7 @@ if st.button("Получить рекомендации по одежде"):
             try:
                 # 1. Получение погодных данных с OpenWeatherMap
                 params = {
-                    'q': selected_city,
-                    'appid': OPENWEATHER_API_KEY,
+                    'q': selected_city,'appid': OPENWEATHER_API_KEY,
                     'units': 'metric',
                     'lang': 'ru'
                 }
@@ -215,6 +225,7 @@ if st.button("Получить рекомендации по одежде"):
                 
                 precipitation_text = weather_data['weather'][0]['description'] if weather_data.get('weather') and weather_data['weather'] else 'ясно'
                 cloudiness_percent = weather_data['clouds']['all'] if 'clouds' in weather_data else 0
+                
                 # Время суток с учетом часового пояса города
                 timezone_offset_seconds = weather_data.get('timezone', 0) 
                 city_timezone = pytz.FixedOffset(timezone_offset_seconds / 60) 
