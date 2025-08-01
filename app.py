@@ -8,8 +8,6 @@ from tensorflow.keras.models import load_model
 from datetime import datetime
 import pytz # Для работы с часовыми поясами
 from sklearn.preprocessing import OneHotEncoder # Явно импортируем OneHotEncoder
-
-
 # --- Конфигурация и загрузка моделей ---
 # Убедитесь, что все эти файлы находятся в одной папке с app.py
 MODEL_PATH = 'weather_clothing_model.h5'
@@ -25,6 +23,10 @@ OPENWEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather"
 # ТВОЯ ПАРТНЕРСКАЯ ССЫЛКА SELA! ОБЯЗАТЕЛЬНО ЗАМЕНИ ПЛЕЙСХОЛДЕР!
 SELA_AFFILIATE_LINK = "https://kpwfp.com/g/2d356747430c2ebe1cc726a738318c/?erid=5jtCeReLm1S3Xx3LfVkzjYr"
 
+# --- Жестко задаем имена числовых признаков, как они были в process_data.py ---
+# Это КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: scaler был обучен на этих русских именах
+NUMERICAL_COLS_FOR_SCALER = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
+
 @st.cache_resource
 def load_all_resources():
     try:
@@ -34,50 +36,31 @@ def load_all_resources():
             
         with open(SCALER_PATH, 'rb') as f:
             scaler = pickle.load(f) 
+            # Здесь мы НЕ пытаемся получить scaler.feature_names_in_
+            # Мы будем использовать заранее заданные NUMERICAL_COLS_FOR_SCALER
             
-            # --- Имена признаков для scaler (получаем из scaler.feature_names_in_) ---
-            # Это должно соответствовать именам, на которых scaler был обучен в process_data.py
-            # Если feature_names_in_ вдруг нет (старая версия sklearn), то используем дефолтные русские.
-            try:
-                numerical_cols_for_scaler = scaler.feature_names_in_.tolist()
-            except AttributeError:
-                st.warning("scaler.feature_names_in_ не найдено. Предполагаем русские названия колонок для масштабирования (Температура, Влажность, Ветер).")
-                numerical_cols_for_scaler = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
-            
-            # Проверка на количество признаков
-            if len(numerical_cols_for_scaler) != 3:
-                 st.warning(f"Ожидалось 3 численных признака для scaler, но найдено {len(numerical_cols_for_scaler)}. Проверьте process_data.py.")
-
-
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
-            # clothing_mapping в process_data.py - это список, который используется для Y.shape[1]
-            # и для Y[i, clothing_mapping.index(item)] = 1
-            # То есть, это просто список строк, где индекс = закодированное значение.
             clothing_mapping = pickle.load(f) 
-            if not isinstance(clothing_mapping, list): # Убедимся, что это список
+            if not isinstance(clothing_mapping, list): 
                 st.error("clothing_mapping.pkl должен содержать список названий одежды.")
                 st.stop()
             
         with open(CLOTHING_GROUPS_PATH, 'rb') as f:
-            clothing_groups = pickle.load(f) # Просто загружаем, но не используем активно в app.py
+            clothing_groups = pickle.load(f) 
 
         # --- Собираем ожидаемый порядок признаков для модели ---
-        # Названия категориальных признаков, как они БЫЛИ в исходных данных обучения для OHE (рус.)
         categorical_cols_for_ohe = ['Осадки', 'Облачность', 'Время суток']
-        
-        # Получаем названия OHE-колонок из обученного OHE
         ohe_feature_names = ohe.get_feature_names_out(categorical_cols_for_ohe)
         
         # Полный порядок признаков, который ожидается моделью
-        input_features_order = numerical_cols_for_scaler + list(ohe_feature_names)
+        # Используем NUMERICAL_COLS_FOR_SCALER для создания этого списка
+        input_features_order = NUMERICAL_COLS_FOR_SCALER + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
-        # Если это предупреждение продолжает появляться, то проблема в том, как формируются
-        # признаки в process_data.py, или их количество отличается от 20.
         if len(input_features_order) != 20:
              st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков на входе модели, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
              
-        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler
+        return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, NUMERICAL_COLS_FOR_SCALER
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
         st.stop()
@@ -85,7 +68,8 @@ def load_all_resources():
         st.error(f"Непредвиденная ошибка при загрузке ресурсов: {e}")
         st.stop()
 
-model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler = load_all_resources()
+# Здесь вызывается функция load_all_resources, и её результат распаковывается
+model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order, numerical_cols_for_scaler_loaded = load_all_resources()
 st.success("Все модели и маппинги успешно загружены!")
 
 # --- Функции для предсказания и маппинга ---
@@ -93,7 +77,6 @@ st.success("Все модели и маппинги успешно загруж�
 # Ваша функция map_precipitation
 def map_precipitation(description):
     desc = description.lower()
-    # Добавлены более полные варианты для лучшего маппинга
     if 'дождь' in desc or 'ливень' in desc or 'морось' in desc or 'небольшой дождь' in desc or 'умеренный дождь' in desc or 'сильный дождь' in desc:
         return 'дождь' 
     elif 'снег' in desc or 'легкий снег' in desc or 'снегопад' in desc:
@@ -132,14 +115,15 @@ def map_time_of_day_to_text(encoded_string):
 
 
 def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
-    # Создаем DataFrame для передачи в scaler с именами колонок, которые scaler ожидает
+    # Создаем DataFrame для передачи в scaler с ТОЧНЫМИ ИМЕНАМИ КОЛОНОК, как в process_data.py
+    # Используем numerical_cols_for_scaler_loaded, полученные при загрузке ресурсов
     numerical_input_for_scaler_df = pd.DataFrame([[temp, humidity, wind]],
-                              columns=numerical_cols_for_scaler) # <<< ИСПОЛЬЗУЕМ numerical_cols_for_scaler ИЗ ЗАГРУЖЕННЫХ ЗНАЧЕНИЙ
+                              columns=numerical_cols_for_scaler_loaded) 
 
     # Масштабирование численных признаков
     input_data_scaled = scaler.transform(numerical_input_for_scaler_df)
     # Создаем DataFrame ПОСЛЕ масштабирования, сохраняя правильные имена
-    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_cols_for_scaler)
+    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_cols_for_scaler_loaded)
 
     # Создаем DataFrame для передачи в OHE (с русскими названиями)
     categorical_input_for_ohe = pd.DataFrame([[precipitation_cat, cloudiness_cat, time_of_day_cat]],
@@ -169,15 +153,14 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness
     recommended_items = []
     threshold = 0.2 # Порог активации для мульти-лейбл классификации. Можно настроить.
     
-    # clothing_mapping - это список, где индекс соответствует элементу одежды.
     for i, prob in enumerate(predictions):
         if prob > threshold:
-            if i < len(clothing_mapping): # Проверка на всякий случай
+            if i < len(clothing_mapping): 
                 recommended_items.append(clothing_mapping[i])
             else:
                 st.warning(f"Индекс {i} из предсказания вне диапазона clothing_mapping.")
         
-        if len(recommended_items) >= 7: # Ограничим количество рекомендаций
+        if len(recommended_items) >= 7: 
             break
 
     # Если ничего не предсказано выше порога, возвращаем что-то дефолтное
@@ -209,8 +192,7 @@ if selected_city == "Другое":
 
 # Кнопка для получения рекомендаций
 if st.button("Получить рекомендации по одежде"):
-    if not selected_city or selected_city == "Другое":
-        st.warning("Пожалуйста, выберите или введите название города.")
+    if not selected_city or selected_city == "Другое":st.warning("Пожалуйста, выберите или введите название города.")
     else:
         with st.spinner(f"Получаем погоду для {selected_city} и генерируем рекомендации..."):
             try:
