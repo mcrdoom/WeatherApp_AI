@@ -8,6 +8,8 @@ from tensorflow.keras.models import load_model
 from datetime import datetime
 import pytz # Для работы с часовыми поясами
 from sklearn.preprocessing import OneHotEncoder # Явно импортируем OneHotEncoder
+from sklearn.preprocessing import StandardScaler # Явно импортируем StandardScaler для проверки
+
 
 # --- Конфигурация и загрузка моделей ---
 # Убедитесь, что все эти файлы находятся в одной папке с app.py
@@ -29,44 +31,43 @@ def load_all_resources():
     try:
         model = load_model(MODEL_PATH)
         with open(OHE_PATH, 'rb') as f:
-            # Загружаем OneHotEncoder напрямую, так как он не в словаре
-            ohe = pickle.load(f)
-            # Если ohe_categories.pkl содержал OneHotEncoder напрямую,
-            # то 'input_features_order' мы из него не получим.
-            # Поэтому строим его здесь.
+            ohe = pickle.load(f) # Загружаем OneHotEncoder напрямую
             
         with open(SCALER_PATH, 'rb') as f:
-            scaler = pickle.load(f)
+            scaler = pickle.load(f) # Загружаем Scaler
         with open(CLOTHING_MAPPING_PATH, 'rb') as f:
-            # clothing_mapping должен быть Series/словарь {encoded_id: clothing_item_name}
-            clothing_mapping = pickle.load(f) 
+            clothing_mapping = pickle.load(f) # Series/словарь {encoded_id: clothing_item_name}
         with open(CLOTHING_GROUPS_PATH, 'rb') as f:
-            clothing_groups = pickle.load(f) # Используется в predict_clothing_for_app
+            clothing_groups = pickle.load(f) # DataFrame или другой список групп
 
         # --- Собираем ожидаемый порядок признаков для модели ---
         # Это критически важно, так как модель ожидала 20 признаков в определенном порядке.
-        # Если 'input_features_order' не был сохранен в ohe_categories.pkl,
-        # мы восстанавливаем его, предполагая стандартную структуру:
-        # сначала 3 численных признака, затем One-Hot-кодированные категориальные.
+        # Мы предполагаем, что scaler обучался на английских названиях колонок,
+        # а OHE на русских.
+        # Поэтому `input_features_order` должен содержать полный список тех имен,
+        # которые были в DataFrame, поданном в model.fit()
+
+        # Названия численных признаков, как они БЫЛИ в исходных данных обучения
+        # (предполагаем английские, так как scaler жалуется на русские)
+        numerical_cols_order_for_scaler = ['temperature_c', 'humidity_percent', 'wind_speed_mps']
         
-        # Численные признаки, которые были при обучении
-        numerical_cols_order = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
-        
-        # Категориальные признаки, на которых обучался OHE
-        # Эти имена должны точно совпадать с теми, что были при обучении
+        # Названия категориальных признаков, как они БЫЛИ в исходных данных обучения (русские)
         categorical_cols_for_ohe = ['Осадки', 'Облачность', 'Время суток']
         
         # Получаем названия OHE-колонок из обученного OHE
-        # ohe.get_feature_names_out() требует списка имен признаков, на которых он был обучен.
         ohe_feature_names = ohe.get_feature_names_out(categorical_cols_for_ohe)
         
         # Полный порядок признаков, который ожидается моделью
-        input_features_order = numerical_cols_order + list(ohe_feature_names)
+        # Предполагаем, что сначала идут масштабированные численные, потом OHE-кодированные
+        input_features_order = numerical_cols_order_for_scaler + list(ohe_feature_names)
         
         # Проверка, что количество признаков соответствует ожидаемому моделью (20)
         if len(input_features_order) != 20:
-             st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков, но собрано {len(input_features_order)}. Возможна ошибка в модели.")
-
+             st.warning(f"ВНИМАНИЕ: Ожидалось 20 признаков, но собрано {len(input_features_order)}. Это может вызвать ошибку модели. Проверьте process_data.py, чтобы убедиться в количестве признаков после OHE.")
+             # Если тут ошибка, то проблема в том, как была обучена модель/OHE.
+             # Если у вас 20 признаков, но другие имена/порядок, то тут нужно точнее.
+             # Это самое вероятное место расхождения, т.к. модель ожидала 20.
+             
         return model, ohe, scaler, clothing_mapping, clothing_groups, input_features_order
     except FileNotFoundError as e:
         st.error(f"Ошибка загрузки файлов: {e}. Убедитесь, что 'process_data.py' и 'define_clothing_groups.py' были успешно запущены и создали все необходимые файлы.")
@@ -121,34 +122,28 @@ def map_time_of_day_to_text(encoded_string):
 
 
 def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat):
-    # Создаем DataFrame с русскими названиями колонок для численных признаков
-    # и текстовыми для категориальных, как ожидает OHE
-    input_data_raw = pd.DataFrame([[temp, humidity, wind, precipitation_cat, cloudiness_cat, time_of_day_cat]],
-                              columns=['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)',
-                                       'Осадки', 'Облачность', 'Время суток'])
-
-    # Числовые признаки
-    numerical_features = ['Температура (°C)', 'Влажность (%)', 'Ветер (м/с)']
+    # Создаем DataFrame для передачи в scaler (с английскими названиями)
+    numerical_input_for_scaler = pd.DataFrame([[temp, humidity, wind]],
+                              columns=['temperature_c', 'humidity_percent', 'wind_speed_mps'])
     
-    # Категориальные признаки
-    categorical_features = ['Осадки', 'Облачность', 'Время суток']
-
     # Масштабирование численных признаков
-    input_data_scaled = scaler.transform(input_data_raw[numerical_features])
-    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_features)
+    input_data_scaled = scaler.transform(numerical_input_for_scaler)
+    input_data_scaled_df = pd.DataFrame(input_data_scaled, columns=numerical_input_for_scaler.columns)
+
+    # Создаем DataFrame для передачи в OHE (с русскими названиями)
+    categorical_input_for_ohe = pd.DataFrame([[precipitation_cat, cloudiness_cat, time_of_day_cat]],
+                              columns=['Осадки', 'Облачность', 'Время суток'])
 
     # One-Hot Encoding для категориальных признаков
-    input_ohe = ohe.transform(input_data_raw[categorical_features])
-    
-    # Получаем названия колонок после OHE
-    ohe_feature_names = ohe.get_feature_names_out(categorical_features)
+    input_ohe = ohe.transform(categorical_input_for_ohe)
+    ohe_feature_names = ohe.get_feature_names_out(categorical_input_for_ohe.columns)
     input_ohe_df = pd.DataFrame(input_ohe.toarray(), columns=ohe_feature_names)
 
     # Объединение всех признаков и обеспечение правильного порядка
-    # Здесь мы используем input_features_order, который был собран при загрузке моделей
     final_input_df = pd.concat([input_data_scaled_df, input_ohe_df], axis=1)
     
     # Переупорядочиваем колонки в соответствии с порядком, на котором обучалась модель
+    # Это должно быть `input_features_order`, загруженный в `load_all_resources`
     final_input_df = final_input_df[input_features_order]
 
     # Преобразуем в numpy array для подачи в модель Keras
@@ -170,16 +165,16 @@ def predict_clothing_for_app(temp, humidity, wind, precipitation_cat, cloudiness
     # clothing_mapping содержит все 71 название одежды, проиндексированные 0..70
     # Просто перебираем предсказания и добавляем, если вероятность выше порога
     
+    # Предполагаем, что clothing_mapping это список/Series, где индекс == закодированное значение,
+    # а содержимое == название одежды.
     for i, prob in enumerate(predictions):
         if prob > threshold:
-            # i - это индекс предсказания, который соответствует закодированному значению
-            # clothing_mapping[i] должно давать название одежды
-            # Assuming clothing_mapping is a list or Series where index i maps to clothing name
             if i < len(clothing_mapping): # Проверка на всякий случай
                 recommended_items.append(clothing_mapping[i])
+            else:
+                st.warning(f"Индекс {i} из предсказания вне диапазона clothing_mapping.")
         
-        # Ограничим количество рекомендаций
-        if len(recommended_items) >= 7: 
+        if len(recommended_items) >= 7: # Ограничим количество рекомендаций
             break
 
     # Если ничего не предсказано выше порога, возвращаем что-то дефолтное
@@ -225,14 +220,14 @@ if st.button("Получить рекомендации по одежде"):
                     'lang': 'ru'
                 }
                 response = requests.get(OPENWEATHER_API_URL, params=params)
-                response.raise_for_status() # Вызовет исключение для ошибок HTTP (4xx или 5xx)
+                response.raise_for_status() 
                 weather_data = response.json()
 
                 temp = weather_data['main']['temp']
-                humidity = weather_data['main']['main']['humidity'] if 'main' in weather_data and 'humidity' in weather_data['main'] else 0
-                wind = weather_data['wind']['speed'] if 'wind' in weather_data and 'speed' in weather_data['wind'] else 0
+                # Убедимся, что поля существуют, используя .get()
+                humidity = weather_data['main'].get('humidity', 0)
+                wind = weather_data['wind'].get('speed', 0)
                 
-                # Описание осадков и облачности
                 precipitation_text = weather_data['weather'][0]['description'] if weather_data.get('weather') and weather_data['weather'] else 'ясно'
                 cloudiness_percent = weather_data['clouds']['all'] if 'clouds' in weather_data else 0
                 
@@ -281,7 +276,8 @@ if st.button("Получить рекомендации по одежде"):
                 st.error(f"Ошибка соединения: {conn_err}. Проверьте ваше интернет-соединение.")
             except requests.exceptions.Timeout as timeout_err:
                 st.error(f"Истекло время ожидания запроса: {timeout_err}. Попробуйте еще раз.")
-            except requests.exceptions.RequestException as req_err:st.error(f"Произошла ошибка при запросе к OpenWeatherMap API: {req_err}")
+            except requests.exceptions.RequestException as req_err:
+                st.error(f"Произошла ошибка при запросе к OpenWeatherMap API: {req_err}")
             except Exception as e:
                 st.error(f"Произошла непредвиденная ошибка: {e}")
                 st.warning("Не удалось получить погодные данные. Попробуйте еще раз или выберите другой город.")
